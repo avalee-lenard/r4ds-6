@@ -12,3 +12,90 @@ library(DBI)
 library(duckdb)
 library(dbplyr)
 ```
+
+```{r}
+con <- dbConnect(duckdb(), "data/atus.duckdb", read_only = TRUE)
+
+dbplyr_act <- tbl(con, "activities")
+dbplyr_resp <- tbl(con, "respondents")
+dbplyr_codes <- tbl(con, "activity_codes")
+```
+
+```{r}
+#| cache: true
+activity_avg <- dbplyr_resp |>
+  filter(day_type == "Weekday", employment_status == "Not in labor force") |>
+  inner_join(dbplyr_act, by = "tucaseid") |>
+  inner_join(
+    dbplyr_codes |> select(activity_code, major_name),
+    by = "activity_code"
+  ) |>
+  group_by(tucaseid, sex, major_name) |>
+  summarize(minutes = sum(duration_min, na.rm = TRUE)) |>
+  group_by(sex, major_name) |>
+  summarize(mean_minutes = mean(minutes, na.rm = TRUE)) |>
+  collect()
+```
+
+```{r}
+activity_avg |>
+  filter(major_name != "Data Codes") |>
+  mutate(major_name = fct_reorder(major_name, mean_minutes, .fun = mean)) |>
+  ggplot(aes(x = mean_minutes, y = major_name, fill = sex)) +
+  geom_col(position = "dodge") +
+  labs(
+    title = "Average Weekday Time Use by Sex",
+    subtitle = "Respondents not in the labor force",
+    x = "Average daily minutes",
+    y = "Major activity category",
+    fill = "Sex",
+    caption = "Source: American Time Use Survey (ATUS), 2003–2024"
+  )
+```
+
+```{r}
+keep_cats <- c(
+  "Personal Care Activities",
+  "Household Activities",
+  "Caring For & Helping Household (HH) Members",
+  "Socializing, Relaxing, and Leisure"
+)
+
+hourly_avg <- dbplyr_act |>
+  mutate(hour = start_hhmm %/% 100L) |>
+  filter(hour >= 6L, hour <= 23L) |>
+  left_join(
+    dbplyr_codes |> select(activity_code, major_name),
+    by = "activity_code"
+  ) |>
+  filter(major_name %in% keep_cats) |>
+  inner_join(
+    dbplyr_resp |>
+      filter(day_type == "Weekday", employment_status == "Not in labor force") |>
+      select(tucaseid, sex),
+    by = "tucaseid"
+  ) |>
+  group_by(sex, hour, major_name) |>
+  summarize(avg_min = mean(duration_min, na.rm = TRUE)) |>
+  collect()
+
+print(hourly_avg)
+```
+
+```{r}
+ggplot(hourly_avg, aes(x = hour, y = avg_min, fill = major_name)) +
+  geom_area() +
+  facet_wrap(vars(sex)) +
+  scale_x_continuous(
+    breaks = seq(6, 23, by = 3),
+    labels = \(x) sprintf("%02d:00", x)
+  ) +
+  labs(
+    title = "How Weekdays Fill Up",
+    subtitle = "Average minutes in activities starting each hour, by sex",
+    x = "Hour of day",
+    y = "Average minutes",
+    fill = "Major activity category",
+    caption = "Source: American Time Use Survey (ATUS), 2003–2024"
+  )
+```
